@@ -330,10 +330,10 @@ def self_sim_join(data, c1, c2, k, t, metric_fn, folder_path, fname):
                 os.remove(temp_file) 
 
     # Remove temporary group pickle files.
-    #for group_id in groups.keys():
-    #        temp_file_1 = f"{folder_path}/group_{group_id}.pkl"
-    #        if os.path.exists(temp_file_1):
-    #            os.remove(temp_file_1)
+    for group_id in groups.keys():
+            temp_file_1 = f"{folder_path}/group_{group_id}.pkl"
+            if os.path.exists(temp_file_1):
+                os.remove(temp_file_1)
     end_queries=time.time()
     return (end_make_group-begin_make_group), (end_queries-begin_queries)
 
@@ -423,7 +423,7 @@ def run(dataset, task, c1, c2, k, t):
         # Store the final results.
         store_results(os.path.join("results/", dataset, task, f"root_join_{c1}_{c2}_{k}_{t}.h5"), 'Root_Join', 'gooaq', 'task2', D, I, d_dim_red+make_groups_time, queries_time, k, f'root_join_params: {c1}, {c2}, {k}, {t}; PCA params: 0.8; zero; Max memory used during dim reduction: {mem_usage} MiB; Max memory used during self_sim_join: {mem_join_usage} MiB')
         # Remove temporary results folder.
-        # shutil.rmtree("temporary")
+        shutil.rmtree("temporary")
     except Exception as e:
         print(f"Error while saving the file: {e}")
 
