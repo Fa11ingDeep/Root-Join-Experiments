@@ -18,7 +18,7 @@ The steps are the following:
 
 ```bash
 git clone https://github.com/Fa11ingDeep/Root-Join-Experiments.git
-cd SISAP-Challenge-2025
+cd Root-Join-Experiments
 ```
 ## Install the requirements
 
