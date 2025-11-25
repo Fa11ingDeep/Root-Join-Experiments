@@ -421,7 +421,7 @@ def run(dataset, task, c1, c2, k, t):
     
     try:
         # Store the final results.
-        store_results(os.path.join("results/", dataset, task, f"root_join_{c1}_{c2}_{k}_{t}.h5"), 'Root_Join', 'gooaq', 'task2', D, I, d_dim_red+make_groups_time, queries_time, k, f'root_join_params: {c1}, {c2}, {k}, {t}; PCA params: 0.8; zero; Max memory used during dim reduction: {mem_usage} MiB; Max memory used during self_sim_join: {mem_join_usage} MiB')
+        store_results(os.path.join("results/", dataset, task, f"root_join_{dataset}_{c1}_{c2}_{k}_{t}.h5"), 'Root_Join', dataset, task, D, I, d_dim_red+make_groups_time, queries_time, k, f'root_join_params: {c1}, {c2}, {k}, {t}; PCA params: 0.8; zero; Max memory used during dim reduction: {mem_usage} MiB; Max memory used during self_sim_join: {mem_join_usage} MiB')
         # Remove temporary results folder.
         shutil.rmtree("temporary")
     except Exception as e:
