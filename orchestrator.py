@@ -2,7 +2,7 @@ import subprocess
 
 # List of commands to execute sequentially
 jobs = [
-    "python root_join.py --dataset gooaq",
+    #"python root_join.py --dataset gooaq",
     "python root_join.py --dataset ccnews",
     "python root_join.py --dataset yahooaq"
 ]
