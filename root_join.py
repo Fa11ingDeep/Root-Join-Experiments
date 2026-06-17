@@ -46,7 +46,7 @@ def getCenters(data, c):
 
 def makeGroups(n, data, centers, metric_fn, c, t, size):
 
-    maxSize = math.floor(c * size) # Maximum size of a group.
+    maxSize = math.floor(c * size) # Maximum size of a group (1/c1 * size).
     groups = {} # Dictionary to store the groups.
 
     # Calculate the next closest centers for each selected center.
@@ -55,9 +55,8 @@ def makeGroups(n, data, centers, metric_fn, c, t, size):
         for j in range(len(centers)):
             if i != j:
                 center_dist.append((j, metric_fn(centers[i][1], centers[j][1])))
-        center_dist.sort(key=lambda x: x[1])  # Sort according the distances.
 
-        next_centers = [c for c, _ in heapq.nsmallest(2, center_dist, key=lambda x: x[1])] # Use a heap, because we only need the 2 closest centers.
+        next_centers = [c for c, _ in heapq.nsmallest(t, center_dist, key=lambda x: x[1])] # Use a heap, because we only need the t closest centers.
         groups[i] = ([((centers[i]),next_centers)], -1, None)  # ([((id,vector), prox_centers)], radius, furtherst_point) The second element (-1) is the radius.
     # Add the points to the groups
     for h in range((maxSize - 1) * len(centers)):
@@ -66,23 +65,23 @@ def makeGroups(n, data, centers, metric_fn, c, t, size):
         for group_id, values in groups.items():  # In points, the first point is always the center of the group.
             datas = values[0][0]
             idx, point = id_point
-            id_points= datas[0]
+            id_points= datas[0] # centers
             points = id_points[1]
-            dists.append((metric_fn(point, points), group_id, idx))  # Append the distances with the group_id.
+            dists.append((metric_fn(point, points), group_id))  # Append the distances with the group_id.
 
         dists.sort(key=lambda x: x[0])  # Sort the distances.
         k = 0
         while True:
-            dist1, group_id1, id = dists[k]
+            dist1, group_id1 = dists[k]
             if len(groups[group_id1][0]) < maxSize:  # If the group size is less than the maximum size.
                 dists.remove(dists[k])  # Remove the point.
                 next_group_list = []  # List of centers.
-                for l in range(t):  # Get the centers and add the first two centers to the list.
-                    dist_temp, group_temp, id = dists[l]
+                for l in range(t):  # Get the centers and add the first t centers to the list.
+                    _ , group_temp = dists[l]
                     next_group_list.append(group_temp)
-                groups[group_id1][0].append(((id, point),next_group_list))  # Append the new point with the new data.
+                groups[group_id1][0].append(((idx, point),next_group_list))  # Append the new point with the new data.
                 if dist1 > groups[group_id1][1]:  # If the new distance is greater than the current radius.
-                    groups[group_id1]=(groups[group_id1][0],dist1,(id,point))  # Update the radius and the farthest point.
+                    groups[group_id1]=(groups[group_id1][0],dist1,(idx,point))  # Update the radius and the farthest point.
                 break 
             else:  # If the group is full.
                 k += 1  # Move to the next closest group.
@@ -105,22 +104,22 @@ def makeGroups(n, data, centers, metric_fn, c, t, size):
                 idx, point = id_point_extended
                 id_points= datas[0]
                 points = id_points[1]
-                dists_extended.append((metric_fn(point, points), group_id, idx))  # Append the distances with the group_id.
+                dists_extended.append((metric_fn(point, points), group_id))  # Append the distances with the group_id.
 
             dists_extended.sort(key=lambda x: x[0])
             p = 0
             while True:
-                dist1, group_id1, id = dists_extended[p]
+                dist1, group_id1 = dists_extended[p]
                 
                 if len(groups[group_id1][0]) < extended_size_group:  # If the group size is less than the maximum size.
                     dists_extended.remove(dists_extended[p])  # Remove the point.
                     next_group_list = []  # List of centers.
-                    for u in range(t):  # Get the centers and add the first two centers to the list.
-                        dist_temp, group_temp, id = dists_extended[u]
+                    for u in range(t):  # Get the centers and add the first t centers to the list.
+                        _ , group_temp = dists_extended[u]
                         next_group_list.append(group_temp)
-                    groups[group_id1][0].append(((id, point),next_group_list)) # Append the new point with the new data.
+                    groups[group_id1][0].append(((idx, point),next_group_list)) # Append the new point with the new data.
                     if dist1 > groups[group_id1][1]:  # If the new distance is greater than the current radius.
-                        groups[group_id1]=(groups[group_id1][0],dist1,(id,point))   # Update the radius and the farthest point.
+                        groups[group_id1]=(groups[group_id1][0],dist1,(idx,point))   # Update the radius and the farthest point.
                     o += 1
                     break 
                 else:  # If the group is full.
@@ -130,10 +129,10 @@ def makeGroups(n, data, centers, metric_fn, c, t, size):
                             groups[group_id1] = ([item for item in groups[group_id1][0] if item[0][0] != groups[group_id1][2][0]],groups[group_id1][1],groups[group_id1][2])
                         dists_extended.remove(dists_extended[p])
                         next_group_list=[] # List of centers.
-                        for p in range(t): # Get the centers and add the first two centers to the list.
-                            dist_temp,group_temp,id=dists_extended[p]
+                        for q in range(t): # Get the centers and add the first t centers to the list.
+                            _ , group_temp=dists_extended[q]
                             next_group_list.append(group_temp)
-                        groups[group_id1][0].append(((id, point),next_group_list))   # Append the new point with the new data.
+                        groups[group_id1][0].append(((idx, point),next_group_list))   # Append the new point with the new data.
                         groups[group_id1]=(groups[group_id1][0],-10000,None) # Reset radius to a negative number and farthest point to None, since we can swap points only once.
                         o+=1
                         break 
@@ -149,22 +148,22 @@ def makeGroups(n, data, centers, metric_fn, c, t, size):
                 idx, point = id_point
                 id_points = datas[0]
                 points = id_points[1]
-                dists_pend.append((metric_fn(point, points), group_id, idx))   # Append the distances with the group_id.
+                dists_pend.append((metric_fn(point, points), group_id))   # Append the distances with the group_id.
 
             dists_pend.sort(key=lambda x: x[0])
             l = 0
             while True:
-                dist1, group_id1, id = dists_pend[l]
+                dist1, group_id1 = dists_pend[l]
                 
                 if len(groups[group_id1][0]) < extended_size_group:  # If the group size is less than the extended maximum size.
                     dists_pend.remove(dists_pend[l])  # Remove the point.
                     next_group_list = []  # List of centers.
-                    for u in range(t):  # Get the centers and add the first two centers to the list.
-                        dist_temp, group_temp, id = dists_pend[u]
+                    for u in range(t):  # Get the centers and add the first t centers to the list.
+                        _ , group_temp = dists_pend[u]
                         next_group_list.append(group_temp)
-                    groups[group_id1][0].append(((id, point),next_group_list))   # Append the new point with the new data.
-                    if (dist1 > groups[group_id1][1] and (groups[group_id1][1] >-10000)):  # If the new distance exceeds the current radius and a swap hasn't occurred.
-                        groups[group_id1]=(groups[group_id1][0],dist1,(id,point))  # Update the radius and the farthest point.
+                    groups[group_id1][0].append(((idx, point),next_group_list))   # Append the new point with the new data.
+                    #if (dist1 > groups[group_id1][1] and (groups[group_id1][1] >-10000)):  # If the new distance exceeds the current radius and a swap hasn't occurred.
+                    #    groups[group_id1]=(groups[group_id1][0],dist1,(idx,point))  # Update the radius and the farthest point.
                     break 
                 else:  # If the group is full.
                     l += 1  # Move to the next closest group.
@@ -199,9 +198,9 @@ def load_pickle_group(group_id, output_dir, lock):
     try:
         # Use a Lock to ensure that only one process accesses the file at a time.
         with lock:
-            with open(group_file_path, mode="rb") as grupo_file:
-                grupo_data = pickle.load(grupo_file)
-        return grupo_data
+            with open(group_file_path, mode="rb") as group_file:
+                group_data = pickle.load(group_file)
+        return group_data
     except PermissionError:
         print(f"Permission denied when trying to read the file {group_file_path}.")
         return None
@@ -226,7 +225,7 @@ def process_group_parallel(args):
         point_e = element[0][1]
         nearest_groups = [elem for elem in element[1]]
 
-        for _ in range(t): # Get points from the two nearest neighboring groups.
+        for _ in range(t): # Get points from the t nearest neighboring groups.
             if nearest_groups:
                 next_g = nearest_groups.pop(0)
                 target += [elem[0] for elem in load_pickle_group(next_g, folder_path,lock)[1]]
@@ -270,9 +269,9 @@ def save_pickle_group(groups, output_dir):
         group_file_path = os.path.join(output_dir, f"group_{group_id}.pkl")
 
         # Open the file in write-binary mode.
-        with open(group_file_path, mode="wb") as grupo_file:
+        with open(group_file_path, mode="wb") as group_file:
             # Serialize the tuple.
-            pickle.dump((group_id,group_points), grupo_file)
+            pickle.dump((group_id,group_points), group_file)
 
         print(f".pkl file for group {group_id} saved in {group_file_path}")
 
@@ -448,7 +447,7 @@ if __name__ == "__main__":
             for k in DATASETS[args.dataset][args.task]['k']:
                 for t in DATASETS[args.dataset][args.task]['t']:
                     run(args.dataset, args.task, c, 1/c, k, t)
-                    print(f"Process completed successfully with c={c}, 1/c={1/c}, k={k} and t={t}")
+                    print(f"Process completed successfully with c={c}, 1/c={1/c}, k={k}, t={t} and dataset={args.dataset}.")
         
     except Exception as e:
         import traceback
