@@ -17,7 +17,8 @@ import shutil
 import ast
 from memory_profiler import memory_usage
 import eval
-
+import pyarrow as pa
+import pyarrow.parquet as pq
 lock = None 
 
 def init_pool(l):
@@ -209,53 +210,150 @@ def load_pickle_group(group_id, output_dir, lock):
         return None
 
 
-def process_group_parallel(args):
+# def process_group_parallel(args):
 
-    group_id, group, k, t, metric_fn, batch_size, folder_path, fname= args # Unpack the arguments.
+#     group_id, group, k, t, metric_fn, batch_size, folder_path, fname= args # Unpack the arguments.
+#     result_batch = []
+#     print(f"Processing group {group_id}.")
+#     start = time.time()
+
+#     temp_output_file = f"{folder_path}/{fname}part{group_id}.csv"
+
+#     # Compute k-NN for each element in the group.
+#     for element in group[0]:
+#         target = [elem[0] for elem in group[0]]
+#         id_e = element[0][0]
+#         point_e = element[0][1]
+#         nearest_groups = [elem for elem in element[1]]
+
+#         for _ in range(t): # Get points from the t nearest neighboring groups.
+#             if nearest_groups:
+#                 next_g = nearest_groups.pop(0)
+#                 target += [elem[0] for elem in load_pickle_group(next_g, folder_path,lock)[1]]
+
+#         # The following block is useful in the original root_join implementation:
+#         #while len(target) < k and nearest_groups:
+#         #    next_g = nearest_groups.pop(0)
+#         #    target += [elem[1] for elem in load_pickle_group(next_g, folder_path,lock)[1]]
+
+#         # Save the result in the temporary array.
+#         knn_ids, knn_dists =get_knn(k, point_e, target, metric_fn)
+#         result_batch.append([int(id_e), knn_ids, knn_dists])
+
+#         # Write results if the size of result_batch is greater than or equal to batch_size.
+#         if len(result_batch) >= batch_size:
+#             with open(temp_output_file, mode='a', newline='') as f_out:
+#                 writer = csv.writer(f_out)
+#                 writer.writerows(result_batch)
+#             result_batch.clear()
+#     # Write the remaining contents of result_batch, if any.
+#     if result_batch:
+#         with open(temp_output_file, mode='a', newline='') as f_out:
+#             writer = csv.writer(f_out)
+#             writer.writerows(result_batch)
+#         result_batch.clear()
+
+#     duration = time.time() - start
+#     print(f"Finished processing group {group_id}.")
+#     return group_id, duration
+
+def process_group_parallel(args):
+    group_id, group, k, t, metric_fn, batch_size, folder_path, fname = args
+
     result_batch = []
     print(f"Processing group {group_id}.")
     start = time.time()
 
-    temp_output_file = f"{folder_path}/{fname}part{group_id}.csv"
+    temp_output_file = os.path.join(
+        folder_path,
+        f"{fname}part{group_id}.parquet"
+    )
 
-    # Compute k-NN for each element in the group.
-    for element in group[0]:
-        target = [elem[0] for elem in group[0]]
-        id_e = element[0][0]
-        point_e = element[0][1]
-        nearest_groups = [elem for elem in element[1]]
+    parquet_writer = None
 
-        for _ in range(t): # Get points from the t nearest neighboring groups.
-            if nearest_groups:
-                next_g = nearest_groups.pop(0)
-                target += [elem[0] for elem in load_pickle_group(next_g, folder_path,lock)[1]]
+    parquet_schema = pa.schema([
+        pa.field("id", pa.int64()),
+        pa.field("knns", pa.list_(pa.int64())),
+        pa.field("dists", pa.list_(pa.float64())),
+    ])
 
-        # The following block is useful in the original root_join implementation:
-        #while len(target) < k and nearest_groups:
-        #    next_g = nearest_groups.pop(0)
-        #    target += [elem[1] for elem in load_pickle_group(next_g, folder_path,lock)[1]]
+    def write_batch(batch):
+        nonlocal parquet_writer
 
-        # Save the result in the temporary array.
-        knns=get_knn(k, point_e, target, metric_fn)
-        result_batch.append([int(id_e), knns[0], knns[1]])
+        if not batch:
+            return
 
-        # Write results if the size of result_batch is greater than or equal to batch_size.
-        if len(result_batch) >= batch_size:
-            with open(temp_output_file, mode='a', newline='') as f_out:
-                writer = csv.writer(f_out)
-                writer.writerows(result_batch)
+        table = pa.Table.from_pydict(
+            {
+                "id": [row[0] for row in batch],
+                "knns": [row[1] for row in batch],
+                "dists": [row[2] for row in batch],
+            },
+            schema=parquet_schema
+        )
+
+        if parquet_writer is None:
+            parquet_writer = pq.ParquetWriter(
+                temp_output_file,
+                parquet_schema,
+                compression="snappy"
+            )
+
+        parquet_writer.write_table(table)
+
+    try:
+        for element in group[0]:
+            target = [elem[0] for elem in group[0]]
+
+            id_e = element[0][0]
+            point_e = element[0][1]
+            nearest_groups = list(element[1])
+
+            for _ in range(t):
+                if nearest_groups:
+                    next_g = nearest_groups.pop(0)
+
+                    neighbor_group = load_pickle_group(
+                        next_g,
+                        folder_path,
+                        lock
+                    )
+
+                    if neighbor_group is not None:
+                        target.extend(
+                            elem[0]
+                            for elem in neighbor_group[1]
+                        )
+
+            knn_ids, knn_dists = get_knn(
+                k,
+                point_e,
+                target,
+                metric_fn
+            )
+
+            result_batch.append([
+                int(id_e),
+                knn_ids,
+                knn_dists,
+            ])
+
+            if len(result_batch) >= batch_size:
+                write_batch(result_batch)
+                result_batch.clear()
+
+        if result_batch:
+            write_batch(result_batch)
             result_batch.clear()
-    # Write the remaining contents of result_batch, if any.
-    if result_batch:
-        with open(temp_output_file, mode='a', newline='') as f_out:
-            writer = csv.writer(f_out)
-            writer.writerows(result_batch)
-        result_batch.clear()
+
+    finally:
+        if parquet_writer is not None:
+            parquet_writer.close()
 
     duration = time.time() - start
     print(f"Finished processing group {group_id}.")
-    return group_id, duration
 
+    return group_id, duration
 
 
 def save_pickle_group(groups, output_dir):
@@ -314,20 +412,77 @@ def self_sim_join(data, c1, c2, k, t, metric_fn, folder_path, fname):
     print("finish self_join")
 
     # Concatenate partial results.
-    print("Concatenating results...")
-    output_file = f"{folder_path}/{fname}.csv"
-    with open(output_file, mode='w', newline='') as final_out:
-        writer = csv.writer(final_out)
-        writer.writerow(['id', 'knns', 'dists'])
+    # print("Concatenating results...")
+    # output_file = f"{folder_path}/{fname}.csv"
+    # with open(output_file, mode='w', newline='') as final_out:
+    #     writer = csv.writer(final_out)
+    #     writer.writerow(['id', 'knns', 'dists'])
 
+    #     for group_id in groups.keys():
+    #         temp_file = f"{folder_path}/{fname}part{group_id}.csv"
+    #         if os.path.exists(temp_file):
+    #             with open(temp_file, mode='r', newline='') as f_in:
+    #                 reader = csv.reader(f_in)
+    #                 writer.writerows(reader)
+    #             os.remove(temp_file) 
+
+    print("Concatenating Parquet results...")
+
+    output_file = os.path.join(
+        folder_path,
+        f"{fname}.parquet"
+    )
+
+    parquet_writer = None
+    final_schema = None
+    files_written = 0
+
+    try:
         for group_id in groups.keys():
-            temp_file = f"{folder_path}/{fname}part{group_id}.csv"
-            if os.path.exists(temp_file):
-                with open(temp_file, mode='r', newline='') as f_in:
-                    reader = csv.reader(f_in)
-                    writer.writerows(reader)
-                os.remove(temp_file) 
+            temp_file = os.path.join(
+                folder_path,
+                f"{fname}part{group_id}.parquet"
+            )
 
+            if not os.path.exists(temp_file):
+                continue
+
+            # Read the entire temporary Parquet file as a columnar table.
+            table = pq.read_table(temp_file)
+            current_schema = table.schema
+
+            # Create the final Parquet file using the first partial schema.
+            if parquet_writer is None:
+                final_schema = current_schema
+
+                parquet_writer = pq.ParquetWriter(
+                    output_file,
+                    final_schema,
+                    compression="snappy"
+                )
+
+            elif current_schema != final_schema:
+                raise ValueError(
+                    f"Schema mismatch in temporary file: {temp_file}"
+                )
+
+            # Write the entire partial table to the final Parquet file.
+            parquet_writer.write_table(table)
+
+            # Release the table before deleting the temporary file.
+            del table
+
+            os.remove(temp_file)
+            files_written += 1
+
+    finally:
+        if parquet_writer is not None:
+            parquet_writer.close()
+
+    if files_written == 0:
+        raise RuntimeError(
+            "No Parquet partial results were generated."
+        )
     # Remove temporary group pickle files.
     for group_id in groups.keys():
             temp_file_1 = f"{folder_path}/group_{group_id}.pkl"
@@ -360,13 +515,13 @@ def store_results(dst, algo, dataset, task, D, I, buildtime, querytime, k, param
         print(f"An error occurred while saving the HDF5 file: {e}")
 
 # Conversion functions with error handling.
-def safe_literal_eval(val, dtype):
+# def safe_literal_eval(val, dtype):
 
-    try:
-        return np.array(ast.literal_eval(val), dtype=dtype)  # Convert to an array with the specified data type.
-    except (ValueError, SyntaxError) as e:
-        print(f"Error while processing value: {val} with error: {e}")
-        return np.array([])
+#     try:
+#         return np.array(ast.literal_eval(val), dtype=dtype)  # Convert to an array with the specified data type.
+#     except (ValueError, SyntaxError) as e:
+#         print(f"Error while processing value: {val} with error: {e}")
+#         return np.array([])
 
 def dim_reduction(data):
     scaler = StandardScaler()
@@ -404,16 +559,31 @@ def run(dataset, task, c1, c2, k, t):
     mem_join_usage, join_result = memory_usage((self_sim_join, (X_pca, c1, c2, k, t, cos_sim, folder_path, fname)), retval=True, max_usage=True, max_iterations=1)
     make_groups_time, queries_time = join_result
     # read the CSV using pandas
-    df = pd.read_csv(f"{folder_path}/{fname}.csv")
-    # Sort the DataFrame by 'id'.
-    df = df.sort_values(by='id')
-    # Clean possible whitespace and quotes.
-    df['knns'] = df['knns'].str.strip().str.replace('"', '')
-    df['dists'] = df['dists'].str.strip().str.replace('"', '')
+    # df = pd.read_csv(f"{folder_path}/{fname}.csv")
+    # # Sort the DataFrame by 'id'.
+    # df = df.sort_values(by='id')
+    # # Clean possible whitespace and quotes.
+    # df['knns'] = df['knns'].str.strip().str.replace('"', '')
+    # df['dists'] = df['dists'].str.strip().str.replace('"', '')
     
-    # Convert the 'knns' and 'dists' columns from texts to lists.
-    knns = df['knns'].apply(lambda x: safe_literal_eval(x, dtype=int))
-    dists = df['dists'].apply(lambda x: safe_literal_eval(x, dtype=float))
+    # # Convert the 'knns' and 'dists' columns from texts to lists.
+    # knns = df['knns'].apply(lambda x: safe_literal_eval(x, dtype=int))
+    # dists = df['dists'].apply(lambda x: safe_literal_eval(x, dtype=float))
+    
+    df = pd.read_parquet(
+        os.path.join(folder_path, f"{fname}.parquet"),
+        engine="pyarrow"
+    )
+
+    df = df.sort_values(by="id")
+
+    knns = df["knns"].apply(
+        lambda values: np.asarray(values, dtype=np.int64)
+    )
+
+    dists = df["dists"].apply(
+        lambda values: np.asarray(values, dtype=np.float64)
+    )
     # Convert to Numpy matrices.
     I = np.vstack(knns)
     D = np.vstack(dists)
