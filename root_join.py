@@ -1,7 +1,6 @@
 import numpy as np
 import math
 import h5py
-import csv
 import os
 import time
 from sklearn.decomposition import PCA
@@ -14,11 +13,10 @@ import pandas as pd
 from datasets import DATASETS, prepare, get_fn
 import argparse
 import shutil
-import ast
 from memory_profiler import memory_usage
-import eval
 import pyarrow as pa
 import pyarrow.parquet as pq
+import gc
 lock = None 
 
 def init_pool(l):
@@ -174,17 +172,33 @@ def makeGroups(n, data, centers, metric_fn, c, t, size):
 
 
 
-def get_knn(k,e,target,metric_fn):
+def get_knn(k, id_e, e, target, metric_fn):
+    temp = []
 
-    temp=[] # Temporary array to store the distances.
-    target=[item for item in target if not np.array_equal(item[1], e)] # Remove the element from the target.
-    for element in target:
-        id_element=element[0]
-        point_element=element[1]
-        dist=metric_fn(e,point_element) # For each element, compute the distance.
-        temp.append((dist,id_element)) # Append the tuple (dist, id).
-    k_nearest = heapq.nsmallest(k, temp, key=lambda x: x[0]) # Sort the distances.
-    return  [int(x[1]) for x in k_nearest],[float(x[0]) for x in k_nearest] # Return the indices and distances of the k nearest elements.
+    for id_element, point_element in target:
+        # Exclude only the query point itself.
+        if id_element == id_e:
+            continue
+
+        dist = metric_fn(e, point_element)
+        temp.append((dist, id_element))
+
+    if len(temp) < k:
+        raise ValueError(
+            f"Point {id_e} has only {len(temp)} candidates, "
+            f"but k={k}."
+        )
+
+    k_nearest = heapq.nsmallest(
+        k,
+        temp,
+        key=lambda x: x[0]
+    )
+
+    return (
+        [int(x[1]) for x in k_nearest],
+        [float(x[0]) for x in k_nearest]
+    )
 
 
 def load_pickle_group(group_id, output_dir, lock):
@@ -237,7 +251,7 @@ def load_pickle_group(group_id, output_dir, lock):
 #         #    target += [elem[1] for elem in load_pickle_group(next_g, folder_path,lock)[1]]
 
 #         # Save the result in the temporary array.
-#         knn_ids, knn_dists =get_knn(k, point_e, target, metric_fn)
+#         knn_ids, knn_dists =get_knn(k, id_e, point_e, target, metric_fn)
 #         result_batch.append([int(id_e), knn_ids, knn_dists])
 
 #         # Write results if the size of result_batch is greater than or equal to batch_size.
@@ -327,6 +341,7 @@ def process_group_parallel(args):
 
             knn_ids, knn_dists = get_knn(
                 k,
+                id_e,
                 point_e,
                 target,
                 metric_fn
@@ -374,7 +389,22 @@ def save_pickle_group(groups, output_dir):
         print(f".pkl file for group {group_id} saved in {group_file_path}")
 
 
+def remove_file_with_retry(file_path, retries=20, delay=0.1):
+    last_error = None
 
+    for _ in range(retries):
+        try:
+            os.remove(file_path)
+            return
+
+        except PermissionError as error:
+            last_error = error
+
+            # Force Python to release pending file references.
+            gc.collect()
+            time.sleep(delay)
+
+    raise last_error
 
 def self_sim_join(data, c1, c2, k, t, metric_fn, folder_path, fname):
 
@@ -433,63 +463,100 @@ def self_sim_join(data, c1, c2, k, t, metric_fn, folder_path, fname):
         f"{fname}.parquet"
     )
 
-    parquet_writer = None
-    final_schema = None
+    if os.path.exists(output_file):
+        remove_file_with_retry(output_file)
+
+    parquet_schema = pa.schema([
+        pa.field("id", pa.int64()),
+        pa.field("knns", pa.list_(pa.int64())),
+        pa.field("dists", pa.list_(pa.float64())),
+    ])
+
     files_written = 0
+    rows_written = 0
+
+    parquet_writer = pq.ParquetWriter(
+        output_file,
+        parquet_schema,
+        compression="snappy"
+    )
 
     try:
-        for group_id in groups.keys():
+        for group_id, group in groups.items():
             temp_file = os.path.join(
                 folder_path,
                 f"{fname}part{group_id}.parquet"
             )
 
             if not os.path.exists(temp_file):
-                continue
-
-            # Read the entire temporary Parquet file as a columnar table.
-            table = pq.read_table(temp_file)
-            current_schema = table.schema
-
-            # Create the final Parquet file using the first partial schema.
-            if parquet_writer is None:
-                final_schema = current_schema
-
-                parquet_writer = pq.ParquetWriter(
-                    output_file,
-                    final_schema,
-                    compression="snappy"
+                raise FileNotFoundError(
+                    f"Missing temporary Parquet file: {temp_file}"
                 )
 
-            elif current_schema != final_schema:
-                raise ValueError(
-                    f"Schema mismatch in temporary file: {temp_file}"
-                )
+            table = None
 
-            # Write the entire partial table to the final Parquet file.
-            parquet_writer.write_table(table)
+            try:
+                # Open the partial file using an explicit Python file handle.
+                with open(temp_file, mode="rb") as partial_file:
+                    table = pq.read_table(partial_file)
 
-            # Release the table before deleting the temporary file.
-            del table
+                if table.schema != parquet_schema:
+                    raise ValueError(
+                        f"Schema mismatch in temporary file: {temp_file}"
+                    )
 
-            os.remove(temp_file)
-            files_written += 1
+                expected_rows = len(group[0])
+
+                if table.num_rows != expected_rows:
+                    raise ValueError(
+                        f"Group {group_id} produced {table.num_rows} rows, "
+                        f"but {expected_rows} were expected."
+                    )
+
+                # Write the entire partial table to the final file.
+                parquet_writer.write_table(table)
+
+                rows_written += table.num_rows
+                files_written += 1
+
+            finally:
+                # Release Arrow references before deleting the source file.
+                table = None
+                gc.collect()
+
+            remove_file_with_retry(temp_file)
 
     finally:
-        if parquet_writer is not None:
-            parquet_writer.close()
+        parquet_writer.close()
 
-    if files_written == 0:
-        raise RuntimeError(
-            "No Parquet partial results were generated."
+    if files_written != len(groups):
+        raise ValueError(
+            f"Expected {len(groups)} partial files, "
+            f"but processed {files_written}."
         )
-    # Remove temporary group pickle files.
+
+    if rows_written != n:
+        raise ValueError(
+            f"Expected {n} result rows, "
+            f"but wrote {rows_written}."
+        )
+
+    # Remove temporary group Pickle files.
     for group_id in groups.keys():
-            temp_file_1 = f"{folder_path}/group_{group_id}.pkl"
-            if os.path.exists(temp_file_1):
-                os.remove(temp_file_1)
-    end_queries=time.time()
-    return (end_make_group-begin_make_group), (end_queries-begin_queries)
+        group_file = os.path.join(
+            folder_path,
+            f"group_{group_id}.pkl"
+        )
+
+        if os.path.exists(group_file):
+            remove_file_with_retry(group_file)
+
+    end_queries = time.time()
+
+    return (
+        end_make_group - begin_make_group,
+        end_queries - begin_queries
+    )
 
 def store_results(dst, algo, dataset, task, D, I, buildtime, querytime, k, params):
 
