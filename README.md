@@ -1,6 +1,6 @@
 # Root-Join-Experiments
 
-Experimental Python implementation of Root Join for approximate k-nearest
+Python implementation of Root Join for approximate k-nearest
 neighbor self-joins, using the SISAP 2025 Task 2 datasets and evaluation
 framework.
 
